@@ -668,10 +668,12 @@ void Frame::buildGradients(int level)
 	{
 		val_p1 = *(img_pt+1);
 
+		//Gradients are taken across each point
 		*((float*)gradxyii_pt) = 0.5f*(val_p1 - val_m1);
 		*(((float*)gradxyii_pt)+1) = 0.5f*(*(img_pt+width) - *(img_pt-width));
-		*(((float*)gradxyii_pt)+2) = val_00;
+		*(((float*)gradxyii_pt)+2) = val_00;	//stores original center value
 
+		//Advance
 		val_m1 = val_00;
 		val_00 = val_p1;
 	}

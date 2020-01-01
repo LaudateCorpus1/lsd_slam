@@ -303,7 +303,7 @@ SE3 SE3Tracker::trackFrame(
 	}
 
 	// ============ track frame ============
-	Sophus::SE3f referenceToFrame = frameToReference_initialEstimate.inverse().cast<float>();
+	Sophus::SE3f referenceToFrame = frameToReference_initialEstimate.inverse().cast<float>();	//Cast is for SSE or NEON
 	NormalEquationsLeastSquares ls;
 
 
@@ -355,7 +355,7 @@ SE3 SE3Tracker::trackFrame(
 				// solve LS system with current lambda
 				Vector6 b = -ls.b;
 				Matrix6x6 A = ls.A;
-				for(int i=0;i<6;i++) A(i,i) *= 1+LM_lambda;
+				for(int i=0;i<6;i++) A(i,i) *= 1+LM_lambda;	//Set Diagonal for LM
 				Vector6 inc = A.ldlt().solve(b);
 				incTry++;
 
@@ -909,9 +909,11 @@ float SE3Tracker::calcResidualAndBuffers(
 	Eigen::Matrix3f rotMat = referenceToFrame.rotationMatrix();
 	Eigen::Vector3f transVec = referenceToFrame.translation();
 	
+	//Pointer offset to last refPoint
 	const Eigen::Vector3f* refPoint_max = refPoint + refNum;
 
-
+	//Image intensity gradients at this level
+	// formatted: dx,dy,center intenssity, not used
 	const Eigen::Vector4f* frame_gradients = frame->gradients(level);
 
 	int idx=0;
@@ -933,8 +935,9 @@ float SE3Tracker::calcResidualAndBuffers(
 
 	for(;refPoint<refPoint_max; refPoint++, refColVar++, idxBuf++)
 	{
-
+		//Transform 3D refPoint into frame using current hypothesis
 		Eigen::Vector3f Wxp = rotMat * (*refPoint) + transVec;
+		//Map into camera image coordinates
 		float u_new = (Wxp[0]/Wxp[2])*fx_l + cx_l;
 		float v_new = (Wxp[1]/Wxp[2])*fy_l + cy_l;
 
@@ -947,12 +950,14 @@ float SE3Tracker::calcResidualAndBuffers(
 			continue;
 		}
 
+		//Because refPoint maps to non-integer pixels, interpolate dx, dy and center pixel value
 		Eigen::Vector3f resInterp = getInterpolatedElement43(frame_gradients, u_new, v_new, w);
 
 		float c1 = affineEstimation_a * (*refColVar)[0] + affineEstimation_b;
 		float c2 = resInterp[2];
 		float residual = c1 - c2;
 
+		//Huber with k = 0.5
 		float weight = fabsf(residual) < 5.0f ? 1 : 5.0f / fabsf(residual);
 		sxx += c1*c1*weight;
 		syy += c2*c2*weight;
@@ -965,14 +970,17 @@ float SE3Tracker::calcResidualAndBuffers(
 		if(isGoodOutBuffer != 0)
 			isGoodOutBuffer[*idxBuf] = isGood;
 
+		//Warped 3D point
 		*(buf_warped_x+idx) = Wxp(0);
 		*(buf_warped_y+idx) = Wxp(1);
 		*(buf_warped_z+idx) = Wxp(2);
 
+		// Image derivatives scaled by pixels/length (fx_l and fy_l)
 		*(buf_warped_dx+idx) = fx_l * resInterp[0];
 		*(buf_warped_dy+idx) = fy_l * resInterp[1];
 		*(buf_warped_residual+idx) = residual;
 
+		//refPoint inverse depth and variance in world coordinates. Why not in camera coordinates?
 		*(buf_d+idx) = 1.0f / (*refPoint)[2];
 		*(buf_idepthVar+idx) = (*refColVar)[1];
 		idx++;
@@ -987,7 +995,8 @@ float SE3Tracker::calcResidualAndBuffers(
 		else
 			badCount++;
 
-		float depthChange = (*refPoint)[2] / Wxp[2];	// if depth becomes larger: pixel becomes "smaller", hence count it less.
+		// if depth becomes larger: pixel becomes "smaller", hence count it less.
+		float depthChange = (*refPoint)[2] / Wxp[2];
 		usageCount += depthChange < 1 ? depthChange : 1;
 
 
@@ -1294,17 +1303,21 @@ Vector6 SE3Tracker::calculateWarpUpdate(
 
 		float z = 1.0f / pz;
 		float z_sqr = 1.0f / (pz*pz);
+
+		//Sophus so3 group is parametrized by 6 Dof { 3 Trans, 3 Rotation }
+		//NOTE: these derivatives assume x'=x, y'=y, z'=z. This seems way off. How do they justify this equivalance?
+		//Otherwise, the derivations check out
 		Vector6 v;
-		v[0] = z*gx + 0;
-		v[1] = 0 +         z*gy;
+		v[0] = z*gx + 0;						//Tx
+		v[1] = 0 +         z*gy;				//Ty
 		v[2] = (-px * z_sqr) * gx +
-			  (-py * z_sqr) * gy;
+			  (-py * z_sqr) * gy;				//Tz
 		v[3] = (-px * py * z_sqr) * gx +
-			  (-(1.0 + py * py * z_sqr)) * gy;
+			  (-(1.0 + py * py * z_sqr)) * gy;	//R1
 		v[4] = (1.0 + px * px * z_sqr) * gx +
-			  (px * py * z_sqr) * gy;
+			  (px * py * z_sqr) * gy;			//R2
 		v[5] = (-py * z) * gx +
-			  (px * z) * gy;
+			  (px * z) * gy;					//R3
 
 		// step 6: integrate into A and b:
 		ls.update(v, r, *(buf_weight_p+i));
